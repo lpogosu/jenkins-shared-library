@@ -1,0 +1,117 @@
+plugins {
+    id 'groovy'
+    id 'codenarc'
+}
+
+group = 'org.lpogosu'
+
+// Jenkins runs pipeline code on Groovy 2.4 — the version the controller itself ships, and
+// the version groovy-cps understands. Compiling this library against anything newer would
+// let syntax through here that the controller cannot parse there, which is a class of bug
+// that only ever shows up in production.
+ext.groovyVersion = '2.4.21'
+
+repositories {
+    mavenCentral()
+    // groovy-cps, the continuation-passing interpreter JenkinsPipelineUnit runs pipelines
+    // on, is published only to the Jenkins artifact repository.
+    maven {
+        url = 'https://repo.jenkins-ci.org/public/'
+        content {
+            includeGroup 'com.cloudbees'
+            includeGroupByRegex 'org\\.jenkins-ci.*'
+        }
+    }
+    // JenkinsPipelineUnit's last release on Maven Central is 1.1, from 2017. Everything
+    // since is built on demand by JitPack from the jenkinsci/JenkinsPipelineUnit tag.
+    maven {
+        url = 'https://jitpack.io'
+        content {
+            includeGroup 'com.github.jenkinsci'
+        }
+    }
+}
+
+// A Jenkins shared library has a fixed layout that Jenkins itself enforces: `vars/` holds
+// the global steps, `src/` the classes, `resources/` the templates. Tests are the one
+// thing Jenkins has no opinion about, so they live in `test/`.
+sourceSets {
+    main {
+        groovy {
+            srcDirs = ['src', 'vars']
+        }
+        resources {
+            srcDirs = ['resources']
+        }
+    }
+    test {
+        groovy {
+            srcDirs = ['test/groovy']
+        }
+        resources {
+            srcDirs = ['test/resources']
+        }
+    }
+}
+
+dependencies {
+    implementation "org.codehaus.groovy:groovy-all:${groovyVersion}"
+
+    testImplementation 'com.github.jenkinsci:JenkinsPipelineUnit:1.29'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.assertj:assertj-core:3.27.4'
+}
+
+tasks.named('test') {
+    useJUnit()
+    // The regression callstacks are checked in. Rewriting them is `./gradlew updateCallstacks`
+    // and shows up as a diff on review, which is the only way a reference file is worth
+    // anything.
+    systemProperty 'pipeline.stack.write', providers.systemProperty('pipeline.stack.write').getOrElse('false')
+    systemProperty 'printstack.disabled', 'true'
+    testLogging {
+        events 'failed'
+        exceptionFormat 'full'
+    }
+    // Gradle prints nothing at all for a green suite, which makes "the tests ran" and "the
+    // tests were skipped as up to date" look identical from the console.
+    afterSuite { descriptor, result ->
+        if (descriptor.parent == null) {
+            logger.lifecycle("${result.testCount} tests, ${result.successfulTestCount} passed, " +
+                "${result.failedTestCount} failed, ${result.skippedTestCount} skipped")
+        }
+    }
+    // The pipeline tests load `vars/` and `resources/` from the project directory through
+    // JenkinsPipelineUnit's ProjectSource retriever, the same way Jenkins reads a library
+    // checkout. Relative paths in the tests resolve against this.
+    workingDir = projectDir
+}
+
+tasks.register('updateCallstacks', Test) {
+    group = 'verification'
+    description = 'Rewrites the checked-in regression callstacks from the current behaviour.'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnit()
+    systemProperty 'pipeline.stack.write', 'true'
+    systemProperty 'printstack.disabled', 'true'
+    workingDir = projectDir
+    outputs.upToDateWhen { false }
+}
+
+codenarc {
+    toolVersion = '3.3.0'
+    configFile = file('config/codenarc.groovy')
+    // A lint finding fails the build. The alternative is a report nobody opens.
+    ignoreFailures = false
+}
+
+tasks.named('codenarcTest') {
+    // Test code says `assert`, declares long literal fixtures and names methods in prose.
+    // Holding it to the production ruleset produces noise, not quality.
+    configFile = file('config/codenarc-test.groovy')
+}
+
+tasks.named('check') {
+    dependsOn 'test', 'codenarcMain', 'codenarcTest'
+}

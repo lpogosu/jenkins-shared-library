@@ -1,0 +1,16 @@
+build/
+.gradle/
+.gradle-home/
+.tooling/
+
+# JenkinsPipelineUnit writes a rejected call stack here when a regression test fails; the
+# reference copies live in test/resources/callstacks and are reviewed.
+callstack/
+
+.idea/
+*.iml
+out/
+.vscode/
+
+.DS_Store
+*.log

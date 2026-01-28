@@ -1,0 +1,3 @@
+${service} ${version} — ${result}
+${trigger}
+${durationText} · <${buildUrl}|build ${buildNumber}> · commit ${commit}

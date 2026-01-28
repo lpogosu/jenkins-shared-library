@@ -1,0 +1,20 @@
+# Rendered by deployTo. Merged over the chart's own values.yaml, so anything not listed
+# here stays whatever the chart says it is.
+image:
+  # A digest, never a tag. The approval a human gave was for these bytes.
+  repository: ${imageRepository}
+  digest: ${imageDigest}
+  pullPolicy: IfNotPresent
+
+podAnnotations:
+  # Enough to answer "what is running and where did it come from" from kubectl alone,
+  # without a working link back to a Jenkins build that may have been rotated away.
+  org.opencontainers.image.version: "${version}"
+  org.opencontainers.image.revision: "${commit}"
+  build.jenkins/url: "${buildUrl}"
+
+env:
+  - name: SERVICE_VERSION
+    value: "${version}"
+  - name: DEPLOY_ENVIRONMENT
+    value: "${environment}"

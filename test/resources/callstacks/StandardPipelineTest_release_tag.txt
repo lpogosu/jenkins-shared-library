@@ -1,0 +1,81 @@
+   standard.run()
+      standard.standardPipeline({name=checkout-api, buildTool=maven, agentLabel=linux && docker, image={registry=registry.example.internal, repository=platform/checkout-api, credentialsId=registry-publisher}, environments={staging={namespace=checkout-staging, url=https://checkout.staging.example, kubeconfigCredentialsId=kubeconfig-staging}, production={namespace=checkout, url=https://checkout.example, kubeconfigCredentialsId=kubeconfig-production, approvers=[platform-leads, checkout-oncall]}}, notify={slack=#checkout-builds, email=checkout-team@example.com}})
+         standardPipeline.echo(checkout-api: release tag v1.5.0 (build 87))
+         standardPipeline.node(linux && docker, groovy.lang.Closure)
+            standardPipeline.stage(Checkout, groovy.lang.Closure)
+               standardPipeline.scmCheckout({config=PipelineConfig(checkout-api, maven, registry.example.internal/platform/checkout-api, staging+production)})
+                  scmCheckout.timeout({time=10, unit=MINUTES}, groovy.lang.Closure)
+                     scmCheckout.retry(3, groovy.lang.Closure)
+                        scmCheckout.checkout({})
+                     scmCheckout.sh({script=git rev-parse HEAD, returnStdout=true, label=resolve revision})
+                     scmCheckout.sh({script=git describe --tags --abbrev=0 --match "v[0-9]*" 2>/dev/null || true, returnStdout=true, label=last release tag})
+                  scmCheckout.echo(revision b17a4d0, last release v1.4.2)
+            standardPipeline.stage(Resolve release candidate, groovy.lang.Closure)
+               standardPipeline.containerImage({mode=resolve, config=PipelineConfig(checkout-api, maven, registry.example.internal/platform/checkout-api, staging+production), context=BuildContext(RELEASE_TAG, v1.5.0, build 87, b17a4d0)})
+                  containerImage.timeout({time=30, unit=MINUTES}, groovy.lang.Closure)
+                     containerImage.usernamePassword({credentialsId=registry-publisher, usernameVariable=REGISTRY_USER, passwordVariable=REGISTRY_PASSWORD})
+                     containerImage.withCredentials([[REGISTRY_USER, REGISTRY_PASSWORD]], groovy.lang.Closure)
+                        containerImage.pwd({tmp=true})
+                        containerImage.withEnv([REGISTRY_HOST=registry.example.internal, DOCKER_CONFIG=tempDirMocked/docker], groovy.lang.Closure)
+                           containerImage.sh({label=registry login, script=printf %s "$REGISTRY_PASSWORD" | docker login --username "$REGISTRY_USER" --password-stdin "$REGISTRY_HOST"})
+                           containerImage.retry(2, groovy.lang.Closure)
+                              containerImage.sh({script=docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' registry.example.internal/platform/checkout-api:sha-b17a4d0 2>/dev/null || true, returnStdout=true, label=resolve release candidate})
+                           containerImage.sh({label=registry logout, script=docker logout "$REGISTRY_HOST" >/dev/null 2>&1 || true})
+            standardPipeline.stage(Promote image, groovy.lang.Closure)
+               standardPipeline.containerImage({mode=promote, config=PipelineConfig(checkout-api, maven, registry.example.internal/platform/checkout-api, staging+production), context=BuildContext(RELEASE_TAG, v1.5.0, build 87, b17a4d0), digest=sha256:4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9cabcd, tags=[1.5.0, 1.5, 1, latest]})
+                  containerImage.timeout({time=10, unit=MINUTES}, groovy.lang.Closure)
+                     containerImage.usernamePassword({credentialsId=registry-publisher, usernameVariable=REGISTRY_USER, passwordVariable=REGISTRY_PASSWORD})
+                     containerImage.withCredentials([[REGISTRY_USER, REGISTRY_PASSWORD]], groovy.lang.Closure)
+                        containerImage.pwd({tmp=true})
+                        containerImage.withEnv([REGISTRY_HOST=registry.example.internal, DOCKER_CONFIG=tempDirMocked/docker], groovy.lang.Closure)
+                           containerImage.sh({label=registry login, script=printf %s "$REGISTRY_PASSWORD" | docker login --username "$REGISTRY_USER" --password-stdin "$REGISTRY_HOST"})
+                           containerImage.retry(1, groovy.lang.Closure)
+                              containerImage.sh({label=promote image, 4 tags, script=docker buildx imagetools create --tag registry.example.internal/platform/checkout-api:1.5.0 --tag registry.example.internal/platform/checkout-api:1.5 --tag registry.example.internal/platform/checkout-api:1 --tag registry.example.internal/platform/checkout-api:latest registry.example.internal/platform/checkout-api@sha256:4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9cabcd})
+                              containerImage.echo(promoted registry.example.internal/platform/checkout-api@sha256:4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9cabcd to 1.5.0, 1.5, 1, latest)
+                           containerImage.sh({label=registry logout, script=docker logout "$REGISTRY_HOST" >/dev/null 2>&1 || true})
+            standardPipeline.stage(Deploy: production, groovy.lang.Closure)
+               standardPipeline.deployTo({config=PipelineConfig(checkout-api, maven, registry.example.internal/platform/checkout-api, staging+production), environment=production, version=1.5.0, commit=b17a4d0c9e2f5813a6c04d7e9b25f1c8a3d60e47, image=registry.example.internal/platform/checkout-api@sha256:4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9cabcd})
+                  deployTo.milestone({ordinal=3, label=deploy-production})
+                  deployTo.timeout({time=720, unit=MINUTES}, groovy.lang.Closure)
+                     deployTo.input({message=Deploy checkout-api 1.5.0 to production?, ok=Deploy, submitter=platform-leads,checkout-oncall, submitterParameter=approvedBy})
+                  deployTo.lock({resource=deploy-checkout-api-production}, groovy.lang.Closure)
+                     deployTo.file({credentialsId=kubeconfig-production, variable=KUBECONFIG})
+                     deployTo.withCredentials([KUBECONFIG], groovy.lang.Closure)
+                        deployTo.libraryResource(org/lpogosu/pipeline/deploy-values.yaml)
+                        deployTo.writeFile({file=deploy-values.yaml, text=# Rendered by deployTo. Merged over the chart's own values.yaml, so anything not listed
+# here stays whatever the chart says it is.
+image:
+  # A digest, never a tag. The approval a human gave was for these bytes.
+  repository: registry.example.internal/platform/checkout-api
+  digest: sha256:4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9cabcd
+  pullPolicy: IfNotPresent
+
+podAnnotations:
+  # Enough to answer "what is running and where did it come from" from kubectl alone,
+  # without a working link back to a Jenkins build that may have been rotated away.
+  org.opencontainers.image.version: "1.5.0"
+  org.opencontainers.image.revision: "b17a4d0c9e2f5813a6c04d7e9b25f1c8a3d60e47"
+  build.jenkins/url: "https://jenkins.example.internal/job/checkout-api/87/"
+
+env:
+  - name: SERVICE_VERSION
+    value: "1.5.0"
+  - name: DEPLOY_ENVIRONMENT
+    value: "production"
+})
+                        deployTo.withEnv([RELEASE_NAME=checkout-api, CHART=deploy/chart, NAMESPACE=checkout, HELM_TIMEOUT=15m, SERVICE_URL=https://checkout.example], groovy.lang.Closure)
+                           deployTo.timeout({time=15, unit=MINUTES}, groovy.lang.Closure)
+                              deployTo.sh({label=helm upgrade production, script=helm upgrade --install "$RELEASE_NAME" "$CHART" \
+        --namespace "$NAMESPACE" \
+        --create-namespace \
+        --values deploy-values.yaml \
+        --atomic --wait --timeout "$HELM_TIMEOUT"})
+                              deployTo.sh({label=post-deploy check, script=curl --fail --silent --show-error --max-time 10 "$SERVICE_URL/healthz" > /dev/null})
+                  deployTo.echo(deployed checkout-api 1.5.0 to production (registry.example.internal/platform/checkout-api@sha256:4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9c4f2a9cabcd))
+            standardPipeline.notifyBuild({config=PipelineConfig(checkout-api, maven, registry.example.internal/platform/checkout-api, staging+production), context=BuildContext(RELEASE_TAG, v1.5.0, build 87, b17a4d0)})
+               notifyBuild.libraryResource(org/lpogosu/pipeline/build-result.txt)
+               notifyBuild.slackSend({channel=#checkout-builds, color=good, message=checkout-api #1 1.5.0 — SUCCESS
+release tag v1.5.0 (build 87)
+1 ms · <https://jenkins.example.internal/job/checkout-api/87/|build 87> · commit b17a4d0
+})
+            standardPipeline.cleanWs()

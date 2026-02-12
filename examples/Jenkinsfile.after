@@ -1,0 +1,32 @@
+// The same service, with the library.
+//
+// Everything left is a fact about this service. The behaviour that used to be spread over
+// five `when` blocks — which branches publish, which deploy, what gets approved, what gets
+// a timeout — moved into a library that is version-pinned and has tests.
+
+@Library('platform-pipeline@v3') _
+
+standardPipeline(
+    name: 'checkout-api',
+    buildTool: 'maven',
+    agentLabel: 'linux && docker',
+    image: [
+        registry     : 'registry.example.internal',
+        repository   : 'platform/checkout-api',
+        credentialsId: 'registry-publisher',
+    ],
+    environments: [
+        staging   : [
+            namespace              : 'checkout-staging',
+            url                    : 'https://checkout.staging.example',
+            kubeconfigCredentialsId: 'kubeconfig-staging',
+        ],
+        production: [
+            namespace              : 'checkout',
+            url                    : 'https://checkout.example',
+            kubeconfigCredentialsId: 'kubeconfig-production',
+            approvers              : ['platform-leads', 'checkout-oncall'],
+        ],
+    ],
+    notify: [slack: '#checkout-builds', email: 'checkout-team@example.com'],
+)

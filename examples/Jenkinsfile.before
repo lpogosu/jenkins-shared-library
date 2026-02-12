@@ -1,0 +1,153 @@
+// The Jenkinsfile this library replaces. Copied between repositories, then edited in each
+// one until they no longer agree about anything.
+//
+// It is not a straw man. Everything wrong with it below is a thing that was, at some point,
+// the shortest way to get a build working:
+//
+//   * the credential is interpolated into `sh`, so it is in the console log of every build
+//   * `junit` is inside `steps`, so a failing suite skips its own report
+//   * nothing has a timeout, so a hung push holds an executor until somebody notices
+//   * `latest` moves on every branch build, including release candidates
+//   * the deploy references a tag, so what is approved and what is pulled can differ
+//   * `when` duplicates the branch condition in five places and they drift
+//   * production waits for an approval, and an older build can still overtake a newer one
+//   * `-DskipTests` was added on a Friday and never removed
+//
+// 135 lines of pipeline, of which about a dozen say anything specific to this service.
+
+pipeline {
+    agent { label 'linux && docker' }
+
+    environment {
+        REGISTRY   = 'registry.example.internal'
+        REPOSITORY = 'platform/checkout-api'
+        IMAGE      = "${REGISTRY}/${REPOSITORY}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_SHA = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    env.VERSION = "1.4.2-${env.BUILD_NUMBER}"
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                sh "mvn -B -DskipTests -Drevision=${env.VERSION} package"
+            }
+        }
+
+        stage('Test') {
+            when {
+                not { branch 'main' }
+            }
+            steps {
+                sh 'mvn -B test'
+                junit '**/target/surefire-reports/TEST-*.xml'
+            }
+        }
+
+        stage('Checkstyle') {
+            steps {
+                sh 'mvn -B checkstyle:checkstyle'
+                recordIssues tools: [checkStyle(pattern: '**/target/checkstyle-result.xml')]
+            }
+        }
+
+        stage('Docker build') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'master'
+                    expression { env.TAG_NAME != null }
+                }
+            }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'registry-publisher',
+                                                  usernameVariable: 'REG_USER',
+                                                  passwordVariable: 'REG_PASS')]) {
+                    sh "docker login -u ${REG_USER} -p ${REG_PASS} ${REGISTRY}"
+                    sh "docker build -t ${IMAGE}:${env.GIT_SHA} ."
+                    sh "docker tag ${IMAGE}:${env.GIT_SHA} ${IMAGE}:latest"
+                    sh "docker push ${IMAGE}:${env.GIT_SHA}"
+                    sh "docker push ${IMAGE}:latest"
+                }
+            }
+        }
+
+        stage('Tag release') {
+            when {
+                expression { env.TAG_NAME != null }
+            }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'registry-publisher',
+                                                  usernameVariable: 'REG_USER',
+                                                  passwordVariable: 'REG_PASS')]) {
+                    sh "docker login -u ${REG_USER} -p ${REG_PASS} ${REGISTRY}"
+                    // Rebuilt from the tagged commit, so this is not the image that was tested.
+                    sh "docker build -t ${IMAGE}:${env.TAG_NAME} ."
+                    sh "docker push ${IMAGE}:${env.TAG_NAME}"
+                }
+            }
+        }
+
+        stage('Deploy staging') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'master'
+                }
+            }
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig-staging', variable: 'KUBECONFIG')]) {
+                    sh """
+                        helm upgrade --install checkout-api deploy/chart \
+                            --namespace checkout-staging \
+                            --set image.repository=${IMAGE} \
+                            --set image.tag=${env.GIT_SHA}
+                    """
+                }
+            }
+        }
+
+        stage('Approve production') {
+            when {
+                expression { env.TAG_NAME != null }
+            }
+            steps {
+                input message: "Deploy ${env.TAG_NAME} to production?", ok: 'Deploy'
+            }
+        }
+
+        stage('Deploy production') {
+            when {
+                expression { env.TAG_NAME != null }
+            }
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig-production', variable: 'KUBECONFIG')]) {
+                    sh """
+                        helm upgrade --install checkout-api deploy/chart \
+                            --namespace checkout \
+                            --set image.repository=${IMAGE} \
+                            --set image.tag=${env.TAG_NAME}
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            slackSend channel: '#checkout-builds',
+                      color: 'danger',
+                      message: "FAILED ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.BUILD_URL})"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

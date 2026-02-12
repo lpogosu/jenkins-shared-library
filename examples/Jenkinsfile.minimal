@@ -1,0 +1,13 @@
+// A library that publishes to an artifact repository, not a registry.
+//
+// No `image` block, so the pipeline stops after the checks: checkout, build, then tests and
+// static analysis in parallel. The validator rejects a Jenkinsfile that declares an
+// environment without an image to put in it, so this cannot half-work.
+
+@Library('platform-pipeline@v3') _
+
+standardPipeline(
+    name: 'billing-clients',
+    buildTool: 'gradle',
+    notify: [slack: '#billing-builds'],
+)

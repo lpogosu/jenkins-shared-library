@@ -1,0 +1,43 @@
+// A service that needed something other than the defaults.
+//
+// Two things are worth noticing. `steps` only says what differs — an integration suite that
+// legitimately takes 50 minutes, and a slower registry — and everything it does not mention
+// keeps the library's default. And there is no way to write `steps: [deploy: [attempts: 3]]`
+// here: the validator rejects it with the reason, on the controller, before an executor is
+// taken.
+
+@Library('platform-pipeline@v3') _
+
+standardPipeline(
+    name: 'ledger-api',
+    buildTool: 'gradle',
+    agentLabel: 'linux && docker && large',
+    testResults: '**/build/test-results/**/TEST-*.xml',
+    image: [
+        registry     : 'registry.example.internal',
+        repository   : 'platform/ledger-api',
+        credentialsId: 'registry-publisher',
+        dockerfile   : 'docker/Dockerfile',
+        buildArgs    : [JDK_VERSION: '21'],
+    ],
+    environments: [
+        staging   : [
+            namespace              : 'ledger-staging',
+            url                    : 'https://ledger.staging.example',
+            chart                  : 'deploy/ledger',
+            kubeconfigCredentialsId: 'kubeconfig-staging',
+        ],
+        production: [
+            namespace              : 'ledger',
+            url                    : 'https://ledger.example',
+            chart                  : 'deploy/ledger',
+            kubeconfigCredentialsId: 'kubeconfig-production',
+            approvers              : ['payments-leads'],
+        ],
+    ],
+    steps: [
+        test : [timeoutMinutes: 50],
+        image: [timeoutMinutes: 45, attempts: 3],
+    ],
+    notify: [slack: '#ledger-builds'],
+)
